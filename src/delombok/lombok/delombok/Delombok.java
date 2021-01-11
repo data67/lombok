@@ -34,7 +34,6 @@ import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.io.Writer;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URLDecoder;
@@ -701,8 +700,12 @@ public class Delombok {
 			
 			if (!disablePreview && Javac.getJavaCompilerVersion() >= 11) argsList.add("--enable-preview");
 			
-			String[] argv = argsList.toArray(new String[0]);
-			args.init("javac", argv);
+			if (Javac.getJavaCompilerVersion() < 15) {
+				String[] argv = argsList.toArray(new String[0]);
+				args.init("javac", argv);
+			} else {
+				args.init("javac", argsList);
+			}
 			options.put("diags.legacy", "TRUE");
 			options.put("allowStringFolding", "FALSE");
 		} else {
@@ -837,12 +840,8 @@ public class Delombok {
 				}
 			}
 		}
-		try {
-			return attributeMethod.invoke(compiler, arg);
-		} catch (Exception e) {
-			if (e instanceof InvocationTargetException) throw Lombok.sneakyThrow(e.getCause());
-			throw Lombok.sneakyThrow(e);
-		}
+		
+		return Permit.invokeSneaky(attributeMethod, compiler, arg);
 	}
 	
 	private static Method flowMethod;
@@ -859,12 +858,8 @@ public class Delombok {
 				}
 			}
 		}
-		try {
-			flowMethod.invoke(compiler, arg);
-		} catch (Exception e) {
-			if (e instanceof InvocationTargetException) throw Lombok.sneakyThrow(e.getCause());
-			throw Lombok.sneakyThrow(e);
-		}
+		
+		Permit.invokeSneaky(flowMethod, compiler, arg);
 	}
 	
 	private static String canonical(File dir) {

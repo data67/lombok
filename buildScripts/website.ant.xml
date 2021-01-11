@@ -150,6 +150,19 @@ such as applying the templates to produce the website, converting the changelog 
 		<website.make version="${lombok.version.live}" fullversion="${lombok.fullversion.live}" cmd="all" />
 	</target>
 	
+	<target name="website.open" depends="website.build, compile.support" description="Builds the website, then serves it locally, opening a browser.">
+		<local name="dir.build.website" />
+		<property name="dir.build.website" location="build/website" />
+		<java classname="lombok.website.RunSite" failonerror="true">
+			<classpath>
+				<path refid="cp.buildtools" />
+				<pathelement location="build/support" />
+			</classpath>
+			<arg value="${dir.build.website}" />
+			<arg value="open" />
+		</java>
+	</target>
+	
 	<target name="website.print-all-versions" depends="compile.support">
 		<java classname="lombok.website.WebsiteMaker" failonerror="true">
 			<classpath>
@@ -204,7 +217,7 @@ such as applying the templates to produce the website, converting the changelog 
 			<package name="lombok" />
 			<package name="lombok.experimental" />
 			<package name="lombok.extern.*" />
-			<classpath location="build/lombok" />
+			<classpath location="build/lombok-main" />
 			<header><![CDATA[<a href='https://projectlombok.org/' target='_blank'>Lombok</a> - ]]>v${lombok.version}</header>
 			<bottom><![CDATA[<i>Copyright &copy; 2009-${javadoc.year} The Project Lombok Authors, licensed under the <a href='http://www.opensource.org/licenses/mit-license.php' target='_blank'>MIT licence</a>.]]></bottom>
 		</javadoc>

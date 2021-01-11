@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012 The Project Lombok Authors.
+ * Copyright (C) 2012-2020 The Project Lombok Authors.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,51 +21,43 @@
  */
 package lombok.eclipse.agent;
 
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
-import lombok.Lombok;
+import lombok.permit.Permit;
 
 public class PatchDelegatePortal {
 	static final String CLASS_SCOPE = "org.eclipse.jdt.internal.compiler.lookup.ClassScope";
+	static final String I_JAVA_ELEMENT_ARRAY = "[Lorg.eclipse.jdt.core.IJavaElement;";
+	static final String SOURCE_TYPE_ELEMENT_INFO = "org.eclipse.jdt.internal.core.SourceTypeElementInfo";
 	
 	public static boolean handleDelegateForType(Object classScope) {
-		try {
-			return (Boolean) Reflection.handleDelegateForType.invoke(null, classScope);
-		} catch (NoClassDefFoundError e) {
-			//ignore, we don't have access to the correct ECJ classes, so lombok can't possibly
-			//do anything useful here.
-			return false;
-		} catch (IllegalAccessException e) {
-			throw Lombok.sneakyThrow(e);
-		} catch (InvocationTargetException e) {
-			throw Lombok.sneakyThrow(e.getCause());
-		} catch (NullPointerException e) {
-			if (!"false".equals(System.getProperty("lombok.debug.reflection", "false"))) {
-				e.initCause(Reflection.problem);
-				throw e;
-			}
-			//ignore, we don't have access to the correct ECJ classes, so lombok can't possibly
-			//do anything useful here.
-			return false;
-		}
+		Boolean v = (Boolean) Permit.invokeSneaky(Reflection.problem, Reflection.handleDelegateForType, null, classScope);
+		if (v == null) return false;
+		return v.booleanValue();
+	}
+	
+	public static Object[] getChildren(Object returnValue, Object javaElement) {
+		return (Object[]) Permit.invokeSneaky(Reflection.problem, Reflection.getChildren, null, returnValue, javaElement);
 	}
 	
 	private static final class Reflection {
 		public static final Method handleDelegateForType;
+		public static final Method getChildren;
 		public static final Throwable problem;
 		
 		static {
-			Method m = null;
+			Method m = null, n = null;
 			Throwable problem_ = null;
 			try {
-				m = PatchDelegate.class.getMethod("handleDelegateForType", Class.forName(CLASS_SCOPE));
+				m = Permit.getMethod(PatchDelegate.class, "handleDelegateForType", Class.forName(CLASS_SCOPE));
+				n = Permit.getMethod(PatchDelegate.class, "getChildren", Class.forName(I_JAVA_ELEMENT_ARRAY), Class.forName(SOURCE_TYPE_ELEMENT_INFO));
 			} catch (Throwable t) {
 				// That's problematic, but as long as no local classes are used we don't actually need it.
 				// Better fail on local classes than crash altogether.
 				problem_ = t;
 			}
 			handleDelegateForType = m;
+			getChildren = n;
 			problem = problem_;
 		}
 	}

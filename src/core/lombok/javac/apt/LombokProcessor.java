@@ -24,8 +24,10 @@ package lombok.javac.apt;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Enumeration;
@@ -154,10 +156,10 @@ public class LombokProcessor extends AbstractProcessor {
 		disablePartialReparseInNetBeansEditor(context);
 		try {
 			Method keyMethod = Permit.getMethod(Context.class, "key", Class.class);
-			Object key = keyMethod.invoke(context, JavaFileManager.class);
+			Object key = Permit.invoke(keyMethod, context, JavaFileManager.class);
 			Field htField = Permit.getField(Context.class, "ht");
 			@SuppressWarnings("unchecked")
-			Map<Object,Object> ht = (Map<Object,Object>) htField.get(context);
+			Map<Object,Object> ht = (Map<Object,Object>) Permit.get(htField, context);
 			final JavaFileManager originalFiler = (JavaFileManager) ht.get(key);
 			if (!(originalFiler instanceof InterceptingJavaFileManager)) {
 				final Messager messager = processingEnv.getMessager();
@@ -180,10 +182,10 @@ public class LombokProcessor extends AbstractProcessor {
 
 	private void replaceFileManagerJdk9(Context context, JavaFileManager newFiler) {
 		try {
-			JavaCompiler compiler = (JavaCompiler) Permit.getMethod(JavaCompiler.class, "instance", Context.class).invoke(null, context);
+			JavaCompiler compiler = (JavaCompiler) Permit.invoke(Permit.getMethod(JavaCompiler.class, "instance", Context.class), null, context);
 			try {
 				Field fileManagerField = Permit.getField(JavaCompiler.class, "fileManager");
-				fileManagerField.set(compiler, newFiler);
+				Permit.set(fileManagerField, compiler, newFiler);
 			}
 			catch (Exception e) {}
 			
@@ -191,7 +193,7 @@ public class LombokProcessor extends AbstractProcessor {
 				Field writerField = Permit.getField(JavaCompiler.class, "writer");
 				ClassWriter writer = (ClassWriter) writerField.get(compiler);
 				Field fileManagerField = Permit.getField(ClassWriter.class, "fileManager");
-				fileManagerField.set(writer, newFiler);
+				Permit.set(fileManagerField, writer, newFiler);
 			}
 			catch (Exception e) {}
 		}
@@ -213,8 +215,8 @@ public class LombokProcessor extends AbstractProcessor {
 	private void disablePartialReparseInNetBeansEditor(Context context) {
 		try {
 			Class<?> cancelServiceClass = Class.forName("com.sun.tools.javac.util.CancelService");
-			Method cancelServiceInstace = Permit.getMethod(cancelServiceClass, "instance", Context.class);
-			Object cancelService = cancelServiceInstace.invoke(null, context);
+			Method cancelServiceInstance = Permit.getMethod(cancelServiceClass, "instance", Context.class);
+			Object cancelService = Permit.invoke(cancelServiceInstance, null, context);
 			if (cancelService == null) return;
 			Field parserField = Permit.getField(cancelService.getClass(), "parser");
 			Object parser = parserField.get(cancelService);
@@ -386,8 +388,8 @@ public class LombokProcessor extends AbstractProcessor {
 		try {
 			if (qualifiedNamableClass == null) qualifiedNamableClass = Class.forName("javax.lang.model.element.QualifiedNamable");
 			if (!qualifiedNamableClass.isInstance(element)) return null;
-			if (qualifiedNamableQualifiedNameMethod == null) qualifiedNamableQualifiedNameMethod = qualifiedNamableClass.getMethod("getQualifiedName");
-			String name = qualifiedNamableQualifiedNameMethod.invoke(element).toString().trim();
+			if (qualifiedNamableQualifiedNameMethod == null) qualifiedNamableQualifiedNameMethod = Permit.getMethod(qualifiedNamableClass, "getQualifiedName");
+			String name = Permit.invoke(qualifiedNamableQualifiedNameMethod, element).toString().trim();
 			return name.isEmpty() ? null : name;
 		} catch (ClassNotFoundException e) {
 			return null;
@@ -432,11 +434,12 @@ public class LombokProcessor extends AbstractProcessor {
 		
 		// try to find a "delegate" field in the object, and use this to try to obtain a JavacProcessingEnvironment
 		for (Class<?> procEnvClass = procEnv.getClass(); procEnvClass != null; procEnvClass = procEnvClass.getSuperclass()) {
-			try {
-				return getJavacProcessingEnvironment(tryGetDelegateField(procEnvClass, procEnv));
-			} catch (final Exception e) {
-				// delegate field was not found, try on superclass
-			}
+			Object delegate = tryGetDelegateField(procEnvClass, procEnv);
+			if (delegate == null) delegate = tryGetProxyDelegateToField(procEnvClass, procEnv);
+			if (delegate == null) delegate = tryGetProcessingEnvField(procEnvClass, procEnv);
+			
+			if (delegate != null) return getJavacProcessingEnvironment(delegate);
+			// delegate field was not found, try on superclass
 		}
 		
 		processingEnv.getMessager().printMessage(Kind.WARNING,
@@ -454,11 +457,12 @@ public class LombokProcessor extends AbstractProcessor {
 		
 		// try to find a "delegate" field in the object, and use this to check for a JavacFiler
 		for (Class<?> filerClass = filer.getClass(); filerClass != null; filerClass = filerClass.getSuperclass()) {
-			try {
-				return getJavacFiler(tryGetDelegateField(filerClass, filer));
-			} catch (final Exception e) {
-				// delegate field was not found, try on superclass
-			}
+			Object delegate = tryGetDelegateField(filerClass, filer);
+			if (delegate == null) delegate = tryGetProxyDelegateToField(filerClass, filer);
+			if (delegate == null) delegate = tryGetFilerField(filerClass, filer);
+			
+			if (delegate != null) return getJavacFiler(delegate);
+			// delegate field was not found, try on superclass
 		}
 		
 		processingEnv.getMessager().printMessage(Kind.WARNING,
@@ -466,7 +470,48 @@ public class LombokProcessor extends AbstractProcessor {
 		return null;
 	}
 
-	private Object tryGetDelegateField(Class<?> delegateClass, Object instance) throws Exception {
-		return Permit.getField(delegateClass, "delegate").get(instance);
+	/**
+	 * Gradle incremental processing
+	 */
+	private Object tryGetDelegateField(Class<?> delegateClass, Object instance) {
+		try {
+			return Permit.getField(delegateClass, "delegate").get(instance);
+		} catch (Exception e) {
+			return null;
+		}
+	}
+	
+	/**
+	 * Kotlin incremental processing
+	 */
+	private Object tryGetProcessingEnvField(Class<?> delegateClass, Object instance) {
+		try {
+			return Permit.getField(delegateClass, "processingEnv").get(instance);
+		} catch (Exception e) {
+			return null;
+		}
+	}
+	
+	/**
+	 * Kotlin incremental processing
+	 */
+	private Object tryGetFilerField(Class<?> delegateClass, Object instance) {
+		try {
+			return Permit.getField(delegateClass, "filer").get(instance);
+		} catch (Exception e) {
+			return null;
+		}
+	}
+	
+	/**
+	 * InteliJ >= 2020.3
+	 */
+	private Object tryGetProxyDelegateToField(Class<?> delegateClass, Object instance) {
+		try {
+			InvocationHandler handler = Proxy.getInvocationHandler(instance);
+			return Permit.getField(handler.getClass(), "val$delegateTo").get(handler);
+		} catch (Exception e) {
+			return null;
+		}
 	}
 }

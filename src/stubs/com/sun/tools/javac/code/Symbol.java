@@ -24,7 +24,8 @@ import com.sun.tools.javac.util.Name;
 public abstract class Symbol implements Element {
 	public Type type;
 	public Name name;
-	
+	public Symbol owner;
+
 	public long flags() { return 0; }
 	public boolean isStatic() { return false; }
 	public boolean isConstructor() { return false; }
@@ -38,7 +39,9 @@ public abstract class Symbol implements Element {
 	@Override public Name getSimpleName() { return null; }
 	@Override public java.util.List<Symbol> getEnclosedElements() { return null; }
 	@Override public Element getEnclosingElement() { return null; }
-	
+	public void appendAttributes(List<Attribute.Compound> l) {
+	}
+
 	public static abstract class TypeSymbol extends Symbol {}
 	
 	public static class MethodSymbol extends Symbol implements ExecutableElement {
@@ -60,6 +63,9 @@ public abstract class Symbol implements Element {
 	
 	public static class VarSymbol extends Symbol implements VariableElement {
 		public Type type;
+		public int adr;
+		public VarSymbol(long flags, Name name, Type type, Symbol owner) {
+		}
 		@Override public ElementKind getKind() { return null; }
 		@Override public Set<Modifier> getModifiers() { return null; }
 		@Override public <R, P> R accept(ElementVisitor<R, P> v, P p) { return null; }

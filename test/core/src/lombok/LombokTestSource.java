@@ -65,8 +65,20 @@ public class LombokTestSource {
 
 	public boolean runOnPlatform(String platform) {
 		if (platforms == null || platforms.isEmpty()) return true;
-		for (String pl : platforms) if (pl.equalsIgnoreCase(platform)) return true;
-		return false;
+		int inclusiveCount = 0;
+		for (String pl : platforms) {
+			if (pl.startsWith("!")) continue;
+			inclusiveCount++;
+			if (pl.equalsIgnoreCase(platform)) return true;
+		}
+		if (inclusiveCount == platforms.size()) {
+			return false;
+		}
+		for (String pl : platforms) {
+			if (!pl.startsWith("!")) continue;
+			if (pl.regionMatches(true, 1, platform, 0, platform.length())) return false;
+		}
+		return true;
 	}
 	
 	public boolean versionWithinLimit(int version) {
@@ -113,10 +125,10 @@ public class LombokTestSource {
 		return formatPreferences;
 	}
 	
-	private static final Pattern VERSION_STYLE_1 = Pattern.compile("^(\\d+)$");
-	private static final Pattern VERSION_STYLE_2 = Pattern.compile("^\\:(\\d+)$");
-	private static final Pattern VERSION_STYLE_3 = Pattern.compile("^(\\d+):$");
-	private static final Pattern VERSION_STYLE_4 = Pattern.compile("^(\\d+):(\\d+)$");
+	private static final Pattern VERSION_STYLE_1 = Pattern.compile("^(\\d+)(?:\\s+.*)?$");
+	private static final Pattern VERSION_STYLE_2 = Pattern.compile("^\\:(\\d+)(?:\\s+.*)?$");
+	private static final Pattern VERSION_STYLE_3 = Pattern.compile("^(\\d+):(?:\\s+.*)?$");
+	private static final Pattern VERSION_STYLE_4 = Pattern.compile("^(\\d+):(\\d+)(?:\\s+.*)?$");
 	
 	private int[] parseVersionLimit(String spec) {
 		/* Single version: '5' */ {

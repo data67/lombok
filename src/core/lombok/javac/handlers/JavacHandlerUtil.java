@@ -35,11 +35,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.lang.model.element.Element;
 
+import com.sun.tools.javac.code.Attribute;
 import com.sun.tools.javac.code.BoundKind;
 import com.sun.tools.javac.code.Flags;
 import com.sun.tools.javac.code.Scope;
@@ -144,12 +144,12 @@ public class JavacHandlerUtil {
 		Options options = Options.instance(context);
 		return (options.keySet().contains("ide") && !options.keySet().contains("backgroundCompilation"));
 	}
-
+	
 	public static boolean inNetbeansCompileOnSave(Context context) {
 		Options options = Options.instance(context);
 		return (options.keySet().contains("ide") && options.keySet().contains("backgroundCompilation"));
 	}
-
+	
 	public static JCTree getGeneratedBy(JCTree node) {
 		return JCTree_generatedNode.get(node);
 	}
@@ -1026,7 +1026,7 @@ public class JavacHandlerUtil {
 	public static JavacNode injectField(JavacNode typeNode, JCVariableDecl field) {
 		return injectField(typeNode, field, false);
 	}
-
+	
 	public static JavacNode injectField(JavacNode typeNode, JCVariableDecl field, boolean addGenerated) {
 		return injectField(typeNode, field, addGenerated, false);
 	}
@@ -1076,6 +1076,17 @@ public class JavacHandlerUtil {
 		private static Constructor<?> CONSTRUCTOR;
 		private static Field ANNOTATIONS, UNDERLYING_TYPE;
 		
+		private static void initByLoader(ClassLoader classLoader) {
+			if (TYPE != null) return;
+			Class<?> c;
+			try {
+				c = classLoader.loadClass("com.sun.tools.javac.tree.JCTree$JCAnnotatedType");
+			} catch (Exception e) {
+				return;
+			}
+			init(c);
+		}
+		
 		private static void init(Class<?> in) {
 			if (TYPE != null) return;
 			if (!in.getName().equals("com.sun.tools.javac.tree.JCTree$JCAnnotatedType")) return;
@@ -1120,14 +1131,33 @@ public class JavacHandlerUtil {
 		}
 		
 		static JCExpression create(List<JCAnnotation> annotations, JCExpression underlyingType) {
+			initByLoader(underlyingType.getClass().getClassLoader());
 			try {
 				return (JCExpression) CONSTRUCTOR.newInstance(annotations, underlyingType);
+			} catch (Exception e) {
+				return underlyingType;
+			}
+		}
+	}
+	
+	static class JCAnnotationReflect {
+		private static Field ATTRIBUTE;
+		
+		static {
+			try {
+				ATTRIBUTE = Permit.getField(JCAnnotation.class, "attribute");
+			} catch (Exception ignore) {}
+		}
+
+		static Attribute.Compound getAttribute(JCAnnotation jcAnnotation) {
+			try {
+				return (Attribute.Compound) ATTRIBUTE.get(jcAnnotation);
 			} catch (Exception e) {
 				return null;
 			}
 		}
 	}
-	
+
 	// jdk9 support, types have changed, names stay the same
 	static class ClassSymbolMembersField {
 		private static final Field membersField;
@@ -1153,7 +1183,7 @@ public class JavacHandlerUtil {
 			try {
 				Scope scope = (Scope) membersField.get(from);
 				if (scope == null) return;
-				removeMethod.invoke(scope, toRemove);
+				Permit.invoke(removeMethod, scope, toRemove);
 			} catch (Exception e) {}
 		}
 		
@@ -1162,7 +1192,7 @@ public class JavacHandlerUtil {
 			try {
 				Scope scope = (Scope) membersField.get(from);
 				if (scope == null) return;
-				enterMethod.invoke(scope, toEnter);
+				Permit.invoke(enterMethod, scope, toEnter);
 			} catch (Exception e) {}
 		}
 	}
@@ -1178,6 +1208,8 @@ public class JavacHandlerUtil {
 	 * Also takes care of updating the JavacAST.
 	 */
 	public static void injectMethod(JavacNode typeNode, JCMethodDecl method, List<Type> paramTypes, Type returnType) {
+		Context context = typeNode.getContext();
+		Symtab symtab = Symtab.instance(context);
 		JCClassDecl type = (JCClassDecl) typeNode.get();
 		
 		if (method.getName().contentEquals("<init>")) {
@@ -1200,17 +1232,38 @@ public class JavacHandlerUtil {
 		addSuppressWarningsAll(method.mods, typeNode, method.pos, getGeneratedBy(method), typeNode.getContext());
 		addGenerated(method.mods, typeNode, method.pos, getGeneratedBy(method), typeNode.getContext());
 		type.defs = type.defs.append(method);
-
+		
 		List<Symbol.VarSymbol> params = null;
 		if (method.getParameters() != null && !method.getParameters().isEmpty()) {
 			ListBuffer<Symbol.VarSymbol> newParams = new ListBuffer<Symbol.VarSymbol>();
-			for (JCTree.JCVariableDecl param : method.getParameters()) {
-				if (param.sym != null) newParams.append(param.sym);
+			for (int i = 0; i < method.getParameters().size(); i++) {
+				JCTree.JCVariableDecl param = method.getParameters().get(i);
+				if (param.sym == null) {
+					Type paramType = paramTypes == null ? param.getType().type : paramTypes.get(i);
+					VarSymbol varSymbol = new VarSymbol(param.mods.flags, param.name, paramType, symtab.noSymbol);
+					varSymbol.adr = 1 << i;
+					List<JCAnnotation> annotations = param.getModifiers().getAnnotations();
+					if (annotations != null && !annotations.isEmpty()) {
+						ListBuffer<Attribute.Compound> newAnnotations = new ListBuffer<Attribute.Compound>();
+						for (JCAnnotation jcAnnotation : annotations) {
+							Attribute.Compound attribute = JCAnnotationReflect.getAttribute(jcAnnotation);
+							if (attribute != null) {
+								newAnnotations.append(attribute);
+							}
+						}
+						if (annotations.length() == newAnnotations.length()) {
+							varSymbol.appendAttributes(newAnnotations.toList());
+						}
+					}
+					newParams.append(varSymbol);
+				} else {
+					newParams.append(param.sym);
+				}
 			}
 			params = newParams.toList();
 			if (params.length() != method.getParameters().length()) params = null;
 		}
-
+		
 		fixMethodMirror(typeNode.getContext(), typeNode.getElement(), method.getModifiers().flags, method.getName(), paramTypes, params, returnType);
 		
 		typeNode.add(method, Kind.METHOD);
@@ -1222,6 +1275,9 @@ public class JavacHandlerUtil {
 		MethodSymbol methodSymbol = new MethodSymbol(access, methodName, new MethodType(paramTypes, returnType, List.<Type>nil(), Symtab.instance(context).methodClass), cs);
 		if (params != null && !params.isEmpty()) {
 			methodSymbol.params = params;
+			for (VarSymbol varSymbol : params) {
+				varSymbol.owner = methodSymbol;
+			}
 		}
 		ClassSymbolMembersField.enter(cs, methodSymbol);
 	}
@@ -1388,6 +1444,7 @@ public class JavacHandlerUtil {
 		}
 		return e;
 	}
+	
 	/**
 	 * In javac, dotted access of any kind, from {@code java.lang.String} to {@code var.methodName}
 	 * is represented by a fold-left of {@code Select} nodes with the leftmost string represented by
@@ -1791,20 +1848,30 @@ public class JavacHandlerUtil {
 	public static JCExpression namePlusTypeParamsToTypeReference(JavacTreeMaker maker, JavacNode type, List<JCTypeParameter> params) {
 		JCClassDecl td = (JCClassDecl) type.get();
 		boolean instance = (td.mods.flags & Flags.STATIC) == 0;
-		return namePlusTypeParamsToTypeReference(maker, type.up(), td.name, instance, params);
+		return namePlusTypeParamsToTypeReference(maker, type.up(), td.name, instance, params, List.<JCAnnotation>nil());
+	}
+	
+	public static JCExpression namePlusTypeParamsToTypeReference(JavacTreeMaker maker, JavacNode type, List<JCTypeParameter> params, List<JCAnnotation> annotations) {
+		JCClassDecl td = (JCClassDecl) type.get();
+		boolean instance = (td.mods.flags & Flags.STATIC) == 0;
+		return namePlusTypeParamsToTypeReference(maker, type.up(), td.name, instance, params, annotations);
 	}
 	
 	public static JCExpression namePlusTypeParamsToTypeReference(JavacTreeMaker maker, JavacNode parentType, Name typeName, boolean instance, List<JCTypeParameter> params) {
+		return namePlusTypeParamsToTypeReference(maker, parentType, typeName, instance, params, List.<JCAnnotation>nil());
+	}
+	
+	public static JCExpression namePlusTypeParamsToTypeReference(JavacTreeMaker maker, JavacNode parentType, Name typeName, boolean instance, List<JCTypeParameter> params, List<JCAnnotation> annotations) {
 		JCExpression r = null;
-		
 		if (parentType != null && parentType.getKind() == Kind.TYPE) {
 			JCClassDecl td = (JCClassDecl) parentType.get();
 			boolean outerInstance = instance && ((td.mods.flags & Flags.STATIC) == 0);
 			List<JCTypeParameter> outerParams = instance ? td.typarams : List.<JCTypeParameter>nil();
-			r = namePlusTypeParamsToTypeReference(maker, parentType.up(), td.name, outerInstance, outerParams);
+			r = namePlusTypeParamsToTypeReference(maker, parentType.up(), td.name, outerInstance, outerParams, List.<JCAnnotation>nil());
 		}
 		
 		r = r == null ? maker.Ident(typeName) : maker.Select(r, typeName);
+		if (!annotations.isEmpty()) r = JCAnnotatedTypeReflect.create(annotations, r);
 		if (!params.isEmpty()) r = maker.TypeApply(r, typeParameterNames(maker, params));
 		return r;
 	}
@@ -1963,47 +2030,6 @@ public class JavacHandlerUtil {
 		return (JCExpression) in;
 	}
 	
-	private static final Pattern SECTION_FINDER = Pattern.compile("^\\s*\\**\\s*[-*][-*]+\\s*([GS]ETTER|WITH(?:ER)?)\\s*[-*][-*]+\\s*\\**\\s*$", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
-	
-	public static String stripLinesWithTagFromJavadoc(String javadoc, String regexpFragment) {
-		Pattern p = Pattern.compile("^\\s*\\**\\s*" + regexpFragment + "\\s*\\**\\s*$", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
-		Matcher m = p.matcher(javadoc);
-		return m.replaceAll("");
-	}
-	
-	public static String stripSectionsFromJavadoc(String javadoc) {
-		Matcher m = SECTION_FINDER.matcher(javadoc);
-		if (!m.find()) return javadoc;
-		
-		return javadoc.substring(0, m.start());
-	}
-	
-	public static String getJavadocSection(String javadoc, String sectionNameSpec) {
-		String[] sectionNames = sectionNameSpec.split("\\|");
-		Matcher m = SECTION_FINDER.matcher(javadoc);
-		int sectionStart = -1;
-		int sectionEnd = -1;
-		while (m.find()) {
-			boolean found = false;
-			for (String sectionName : sectionNames) if (m.group(1).equalsIgnoreCase(sectionName)) {
-				found = true;
-				break;
-			}
-			if (found) {
-				sectionStart = m.end() + 1;
-			} else if (sectionStart != -1) {
-				sectionEnd = m.start();
-			}
-		}
-		
-		if (sectionStart != -1) {
-			if (sectionEnd != -1) return javadoc.substring(sectionStart, sectionEnd);
-			return javadoc.substring(sectionStart);
-		}
-		
-		return null;
-	}
-	
 	public static enum CopyJavadoc {
 		VERBATIM {
 			@Override public String apply(final JCCompilationUnit cu, final JavacNode node) {
@@ -2079,6 +2105,7 @@ public class JavacHandlerUtil {
 	public static void copyJavadoc(JavacNode from, JCTree to, CopyJavadoc copyMode) {
 		copyJavadoc(from, to, copyMode, false);
 	}
+	
 	/**
 	 * Copies javadoc on one node to the other.
 	 * 
@@ -2093,29 +2120,11 @@ public class JavacHandlerUtil {
 		try {
 			JCCompilationUnit cu = ((JCCompilationUnit) from.top().get());
 			String newJavadoc = copyMode.apply(cu, from);
-			if (newJavadoc != null) {
-				if (forceAddReturn) newJavadoc = addReturnsThisIfNeeded(newJavadoc);
-				Javac.setDocComment(cu, to, newJavadoc);
+			if (forceAddReturn) {
+				newJavadoc = addReturnsThisIfNeeded(newJavadoc);
 			}
+			Javac.setDocComment(cu, to, newJavadoc);
 		} catch (Exception ignore) {}
-	}
-	
-	private static final Pattern FIND_RETURN = Pattern.compile("^\\s*\\**\\s*@returns?\\s+.*$", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
-	static String addReturnsThisIfNeeded(String in) {
-		if (FIND_RETURN.matcher(in).find()) return in;
-		
-		return addJavadocLine(in, "@return {@code this}.");
-	}
-	
-	static String addReturnsUpdatedSelfIfNeeded(String in) {
-		if (FIND_RETURN.matcher(in).find()) return in;
-		
-		return addJavadocLine(in, "@return a clone of this object, except with this updated property (returns {@code this} if an identical value is passed).");
-	}
-	
-	static String addJavadocLine(String in, String line) {
-		if (in.endsWith("\n")) return in + line + "\n";
-		return in + "\n" + line;
 	}
 	
 	public static boolean isDirectDescendantOfObject(JavacNode typeNode) {
@@ -2161,6 +2170,10 @@ public class JavacHandlerUtil {
 			JCExpression resType = mth.restype;
 			if (resType instanceof JCTypeApply) {
 				JCTypeApply ta = (JCTypeApply) resType;
+				if (ta.clazz instanceof JCFieldAccess) {
+					mth.restype = maker.TypeApply(maker.AnnotatedType(List.of(m), ta.clazz), ta.arguments);
+					return;
+				}
 				resType = ta.clazz;
 			}
 			
